@@ -30,6 +30,7 @@ SOFTWARE.
 #include <string>
 #include <memory>
 #include <map>
+#include <set>
 #include <rclcpp/rclcpp.hpp>
 
 #include "network_bridge/subscription_manager.hpp"
@@ -67,6 +68,23 @@ protected:
    * @brief Loads default parameters and creates subsciption managers for each topic.
    */
   virtual void load_parameters();
+
+  /**
+   * @brief Creates a subscription manager and send timer for a single topic.
+   *
+   * @param topic The topic name, relative to the subscribe namespace.
+   * @param rate The send rate in Hz.
+   * @param zstd_level The compression level for this topic.
+   */
+  virtual void add_topic(const std::string & topic, double rate, int zstd_level);
+
+  /**
+   * @brief Bridges any new topics in the ROS graph that match a topic pattern.
+   *
+   * Topics whose only publisher is this node are skipped to avoid echoing
+   * received data back over the network.
+   */
+  virtual void discover_topics();
 
   /**
    * @brief Loads the network interface as a dynamic plugin and initializes it.
@@ -174,4 +192,39 @@ protected:
    * @brief the namespace for the publishers.
    */
   std::string publish_namespace_;
+
+  /**
+   * @brief the namespace for the subscriptions.
+   */
+  std::string subscribe_namespace_;
+
+  /**
+   * @brief Whether to re-send data when no new message has been received.
+   */
+  bool publish_stale_data_;
+
+  /**
+   * @brief A glob pattern from the topics parameter and its send settings.
+   */
+  struct TopicPattern
+  {
+    std::string pattern;
+    double rate;
+    int zstd_level;
+  };
+
+  /**
+   * @brief Topic patterns that are matched against the ROS graph by discover_topics().
+   */
+  std::vector<TopicPattern> topic_patterns_;
+
+  /**
+   * @brief Topics that already have a subscription manager, relative to the subscribe namespace.
+   */
+  std::set<std::string> bridged_topics_;
+
+  /**
+   * @brief Timer that periodically calls discover_topics() when patterns are configured.
+   */
+  rclcpp::TimerBase::SharedPtr discovery_timer_;
 };

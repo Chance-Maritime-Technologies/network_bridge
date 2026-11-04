@@ -34,6 +34,10 @@ if(BUILD_TESTING)
     TIMEOUT 2  # Sets a timeout for the test in seconds
   )
   add_launch_test(
+    test/test_udp_wildcard.py
+    TIMEOUT 20
+  )
+  add_launch_test(
     test/test_tcp.py
     TIMEOUT 2  # Sets a timeout for the test in seconds
   )

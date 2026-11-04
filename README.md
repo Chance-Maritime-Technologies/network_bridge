@@ -56,6 +56,15 @@ The following configuration examples demonstrate a robot sending a message on `/
       send_port: 5001
 ```
 
+#### Wildcard Topics
+Entries in `topics` may be glob patterns (`*`, `?`, `[abc]`).  Patterns are matched against the ROS graph every `topic_discovery_period` seconds (default 2.0), so topics that appear after startup are bridged automatically.  `*` matches within a single name segment, so `/payload/winch/*/*/state` matches `/payload/winch/roboclaw_udp/anchor_winch/state` but nothing deeper.  A pattern's `rate` and `zstd_level` apply to every topic it matches, explicitly listed topics take precedence, and topics published only by the bridge itself are never matched.
+```
+    topics:
+      - "/payload/winch/*/*/state"
+    /payload/winch/*/*/state:
+      rate: 2.0
+```
+
 ### Choice of protocol
 - **UDP**: Use UDP for low-latency, high-throughput communications, where occasional data loss is tolerable. Ideal for real-time telemetry data like sensor streams.
 - **TCP**: Opt for TCP when data integrity and reliability are critical. This ensures that control commands and state transitions are reliably delivered, though with potentially higher latency.
