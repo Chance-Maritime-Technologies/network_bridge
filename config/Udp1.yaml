@@ -50,14 +50,21 @@
     publish_stale_data: False
 
     # List all topics that are to be sent over the network interface
+    # Glob patterns (*, ?, [abc]) are matched against the ROS graph and new
+    # matches are picked up while running.  * does not match across a /.
+    # Explicitly listed topics take precedence over pattern matches.
     topics:
       - "/MyDefaultTopic"
       - "/MySpecialTopic"
+      - "/MyWildcard/*/data"
     
-    # Defaults can be overridden for all topics
+    # Defaults can be overridden for all topics and patterns
     /MySpecialTopic:
       rate: 2.0
       zstd_level: 5
+
+    # How often (seconds) to look for new topics matching a pattern
+    topic_discovery_period: 2.0
     
     # Namespace to be applied to subscribed topics
     subscribe_namespace: "/udp1"

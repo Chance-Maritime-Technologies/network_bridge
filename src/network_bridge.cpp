@@ -26,7 +26,9 @@ SOFTWARE.
 
 #include "network_bridge/network_bridge.hpp"
 
+#include <fnmatch.h>
 #include <zstd.h>
+#include <algorithm>
 #include <span>
 #include <fstream>
 #include <bit>
@@ -55,9 +57,8 @@ void NetworkBridge::load_parameters()
     std::string("network_bridge::UdpInterface"));
   this->get_parameter("network_interface", network_interface_name_);
 
-  bool publish_stale_data;
   this->declare_parameter("publish_stale_data", false);
-  this->get_parameter("publish_stale_data", publish_stale_data);
+  this->get_parameter("publish_stale_data", publish_stale_data_);
   // Defaults
   this->declare_parameter("default_rate", 5.0);
   this->declare_parameter("default_zstd_level", 3);
@@ -83,21 +84,20 @@ void NetworkBridge::load_parameters()
       publish_namespace_.c_str());
   }
 
-  std::string subscribe_namespace;
   this->declare_parameter("subscribe_namespace", "");
-  this->get_parameter("subscribe_namespace", subscribe_namespace);
+  this->get_parameter("subscribe_namespace", subscribe_namespace_);
 
-  if (!subscribe_namespace.empty()) {
-    if (subscribe_namespace.front() != '/') {
-      subscribe_namespace.insert(0, "/");
+  if (!subscribe_namespace_.empty()) {
+    if (subscribe_namespace_.front() != '/') {
+      subscribe_namespace_.insert(0, "/");
     }
-    if (subscribe_namespace.back() == '/') {
-      subscribe_namespace.pop_back();
+    if (subscribe_namespace_.back() == '/') {
+      subscribe_namespace_.pop_back();
     }
     RCLCPP_INFO(
       this->get_logger(),
       "Topics will be subscribed to under the namespace %s",
-      subscribe_namespace.c_str());
+      subscribe_namespace_.c_str());
   }
 
   // Load topics information
@@ -115,29 +115,105 @@ void NetworkBridge::load_parameters()
     this->declare_parameter<double>(rate_param_name, default_rate);
     this->declare_parameter<int>(zstd_level_param_name, default_zstd_level);
 
-    float rate;
+    double rate;
     int zstd_level;
 
     this->get_parameter(rate_param_name, rate);
     this->get_parameter(zstd_level_param_name, zstd_level);
 
-    auto manager = std::make_shared<SubscriptionManager>(
-      shared_from_this(), topic, subscribe_namespace,
-      zstd_level, publish_stale_data);
-    sub_mgrs_.push_back(manager);
+    // ROS names cannot contain glob characters, so these are always patterns
+    if (topic.find_first_of("*?[") != std::string::npos) {
+      topic_patterns_.push_back({topic, rate, zstd_level});
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Topic pattern: %s, Rate: %f Hz", topic.c_str(), rate);
+      continue;
+    }
 
-    int ms = static_cast<int>(1000.0 / rate);
-    auto timer = this->create_wall_timer(
-      std::chrono::milliseconds(ms),
-      [this, manager]() {
-        send_data(manager);
+    add_topic(topic, rate, zstd_level);
+  }
+
+  if (topic_patterns_.empty()) {
+    return;
+  }
+
+  double discovery_period;
+  this->declare_parameter("topic_discovery_period", 2.0);
+  this->get_parameter("topic_discovery_period", discovery_period);
+
+  discover_topics();
+  discovery_timer_ = this->create_wall_timer(
+    std::chrono::duration<double>(discovery_period),
+    [this]() {
+      discover_topics();
+    });
+}
+
+void NetworkBridge::add_topic(
+  const std::string & topic, double rate, int zstd_level)
+{
+  auto manager = std::make_shared<SubscriptionManager>(
+    shared_from_this(), topic, subscribe_namespace_,
+    zstd_level, publish_stale_data_);
+  sub_mgrs_.push_back(manager);
+  bridged_topics_.insert(topic);
+
+  int ms = static_cast<int>(1000.0 / rate);
+  auto timer = this->create_wall_timer(
+    std::chrono::milliseconds(ms),
+    [this, manager]() {
+      send_data(manager);
+    });
+
+  timers_.push_back(timer);
+
+  RCLCPP_INFO(
+    this->get_logger(),
+    "Topic: %s, Rate: %f Hz", topic.c_str(), rate);
+}
+
+void NetworkBridge::discover_topics()
+{
+  const auto all_topics_and_types = this->get_topic_names_and_types();
+  const std::string & ns = subscribe_namespace_;
+
+  for (const auto & [full_topic, types] : all_topics_and_types) {
+    if (full_topic.size() <= ns.size() ||
+      full_topic.compare(0, ns.size(), ns) != 0 ||
+      full_topic[ns.size()] != '/')
+    {
+      continue;
+    }
+
+    std::string topic = full_topic.substr(ns.size());
+    if (bridged_topics_.count(topic)) {
+      continue;
+    }
+
+    auto pattern = std::find_if(
+      topic_patterns_.begin(), topic_patterns_.end(),
+      [&topic](const TopicPattern & p) {
+        return fnmatch(p.pattern.c_str(), topic.c_str(), FNM_PATHNAME) == 0;
       });
+    if (pattern == topic_patterns_.end()) {
+      continue;
+    }
 
-    timers_.push_back(timer);
+    const auto publishers = this->get_publishers_info_by_topic(full_topic);
+    bool has_external_publisher = std::any_of(
+      publishers.begin(), publishers.end(),
+      [this](const rclcpp::TopicEndpointInfo & info) {
+        return info.node_name() != this->get_name() ||
+               info.node_namespace() != this->get_namespace();
+      });
+    if (!has_external_publisher) {
+      continue;
+    }
 
     RCLCPP_INFO(
       this->get_logger(),
-      "Topic: %s, Rate: %f Hz", topic.c_str(), rate);
+      "Topic %s matched pattern %s", topic.c_str(), pattern->pattern.c_str());
+    add_topic(topic, pattern->rate, pattern->zstd_level);
   }
 }
 
